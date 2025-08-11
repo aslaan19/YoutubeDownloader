@@ -17,6 +17,8 @@ import {
   Eye,
   Coffee,
   Heart,
+  ExternalLink,
+  AlertCircle,
 } from "lucide-react";
 
 const youtubeConfig: ServiceConfig = {
@@ -39,6 +41,9 @@ export default function YouTubePage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [downloadMethod, setDownloadMethod] = useState<
+    "server" | "external" | null
+  >(null);
 
   const fetchVideoInfo = async (videoUrl: string) => {
     if (!videoUrl.trim()) return;
@@ -68,6 +73,50 @@ export default function YouTubePage() {
     }
   };
 
+  const getVideoId = (videoUrl: string): string | null => {
+    const match = videoUrl.match(
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/
+    );
+    return match ? match[1] : null;
+  };
+
+  const handleFallbackDownload = (format: "mp3" | "mp4") => {
+    const videoId = getVideoId(url);
+    if (!videoId) {
+      setError("Invalid YouTube URL");
+      return;
+    }
+
+    // Multiple fallback services for reliability
+    const services = {
+      mp3: [
+        `https://ytmp3.cc/en13/${videoId}/`,
+        `https://y2mate.com/youtube/${videoId}`,
+        `https://www.mp3converter.net/youtube-to-mp3/${videoId}`,
+        `https://yt1s.com/en/youtube-to-mp3?q=${encodeURIComponent(url)}`,
+      ],
+      mp4: [
+        `https://ytmp4.cc/en13/${videoId}/`,
+        `https://y2mate.com/youtube-mp4/${videoId}`,
+        `https://www.clipconverter.cc/2/`,
+        `https://yt1s.com/en/youtube-to-mp4?q=${encodeURIComponent(url)}`,
+      ],
+    };
+
+    // Open the first service
+    window.open(services[format][0], "_blank");
+    setDownloadMethod("external");
+
+    // Show helpful message with alternatives
+    setError(
+      `Redirected to external download service. If it doesn't work, try these alternatives: ${services[
+        format
+      ]
+        .slice(1, 2)
+        .join(", ")}`
+    );
+  };
+
   const handleQuickDownload = async (format: "mp3" | "mp4") => {
     if (!url.trim()) {
       setError("Please enter a YouTube URL");
@@ -80,7 +129,10 @@ export default function YouTubePage() {
 
     setIsDownloading(true);
     setError("");
+    setDownloadMethod(null);
+
     try {
+      // STEP 1: Try server-side download first
       const response = await fetch("/api/youtube/download", {
         method: "POST",
         headers: {
@@ -93,25 +145,34 @@ export default function YouTubePage() {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Download failed");
+      if (response.ok) {
+        // Server download successful
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+
+        const extension = format === "mp3" ? "webm" : "mp4";
+        link.download = `${
+          videoInfo?.title || "youtube-download"
+        }.${extension}`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+
+        setDownloadMethod("server");
+        setError(""); // Clear any previous errors
+        return;
       }
 
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-
-      const extension = format === "mp3" ? "webm" : "mp4";
-      link.download = `${videoInfo?.title || "youtube-download"}.${extension}`;
-
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(downloadUrl);
+      // STEP 2: Server failed, use fallback
+      throw new Error("Server download failed");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Download failed");
+      console.log("Server download failed, using external service fallback");
+      setDownloadMethod("external");
+      handleFallbackDownload(format);
     } finally {
       setIsDownloading(false);
     }
@@ -126,7 +187,10 @@ export default function YouTubePage() {
 
     setIsDownloading(true);
     setError("");
+    setDownloadMethod(null);
+
     try {
+      // Try server download first
       const response = await fetch("/api/youtube/download", {
         method: "POST",
         headers: {
@@ -139,25 +203,30 @@ export default function YouTubePage() {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Download failed");
+      if (response.ok) {
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+
+        const extension = data.format === "mp3" ? "webm" : "mp4";
+        link.download = `${
+          videoInfo?.title || "youtube-download"
+        }.${extension}`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+
+        setDownloadMethod("server");
+        return;
       }
 
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-
-      const extension = data.format === "mp3" ? "webm" : "mp4";
-      link.download = `${videoInfo?.title || "youtube-download"}.${extension}`;
-
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(downloadUrl);
+      throw new Error("Server download failed");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Download failed");
+      setDownloadMethod("external");
+      handleFallbackDownload(data.format as "mp3" | "mp4");
     } finally {
       setIsDownloading(false);
     }
@@ -186,9 +255,37 @@ export default function YouTubePage() {
       </div>
 
       <main className="max-w-4xl mx-auto px-4 pb-16 -mt-8">
+        {/* Status Indicator */}
+        {downloadMethod && (
+          <div
+            className={`mb-6 p-4 rounded-2xl border ${
+              downloadMethod === "server"
+                ? "bg-green-50 border-green-200"
+                : "bg-blue-50 border-blue-200"
+            } animate-in slide-in-from-top-2 duration-300`}
+          >
+            <div className="flex items-center gap-2">
+              {downloadMethod === "server" ? (
+                <>
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <p className="text-green-700 font-medium">
+                    ✅ Direct download successful!
+                  </p>
+                </>
+              ) : (
+                <>
+                  <ExternalLink className="w-4 h-4 text-blue-600" />
+                  <p className="text-blue-700 font-medium">
+                    Redirected to external download service
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Buy Me a Coffee Section */}
         <div className="bg-gradient-to-r from-amber-50 via-yellow-50 to-orange-50 rounded-2xl border border-amber-200/50 p-6 mb-8 relative overflow-hidden shadow-lg">
-          {/* Floating coffee bean animations */}
           <div className="absolute top-2 right-4 w-2 h-2 bg-amber-500 rounded-full opacity-40 animate-bounce delay-1000"></div>
           <div className="absolute bottom-3 left-6 w-1.5 h-1.5 bg-yellow-500 rounded-full opacity-30 animate-bounce delay-2000"></div>
 
@@ -283,12 +380,61 @@ export default function YouTubePage() {
               </div>
             </div>
 
-            {/* Error Display */}
+            {/* Error/Status Display */}
             {error && (
-              <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-2xl animate-in slide-in-from-top-2 duration-300">
+              <div
+                className={`mt-6 p-4 rounded-2xl border animate-in slide-in-from-top-2 duration-300 ${
+                  downloadMethod === "external"
+                    ? "bg-blue-50 border-blue-200"
+                    : "bg-red-50 border-red-200"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  {downloadMethod === "external" ? (
+                    <ExternalLink className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
+                  )}
+                  <div>
+                    <p
+                      className={`font-medium ${
+                        downloadMethod === "external"
+                          ? "text-blue-700"
+                          : "text-red-700"
+                      }`}
+                    >
+                      {downloadMethod === "external"
+                        ? "External Download"
+                        : "Error"}
+                    </p>
+                    <p
+                      className={`text-sm mt-1 ${
+                        downloadMethod === "external"
+                          ? "text-blue-600"
+                          : "text-red-600"
+                      }`}
+                    >
+                      {error}
+                    </p>
+                    {downloadMethod === "external" && (
+                      <p className="text-xs text-blue-500 mt-2">
+                        💡 If the external service doesn't work, try copying
+                        your YouTube URL and using a different download site.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Success Message */}
+            {downloadMethod === "server" && !error && (
+              <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-2xl animate-in slide-in-from-top-2 duration-300">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                  <p className="text-red-700 font-medium">{error}</p>
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <p className="text-green-700 font-medium">
+                    ✅ Download started successfully!
+                  </p>
                 </div>
               </div>
             )}
@@ -365,48 +511,69 @@ export default function YouTubePage() {
           </div>
         )}
 
-        {/* Instructions */}
+        {/* Enhanced Instructions */}
         <div className="mt-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl border border-blue-200">
           <h4 className="font-bold text-blue-900 mb-4 flex items-center gap-2">
             <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-            How to use
+            How it works
           </h4>
-          <div className="grid md:grid-cols-2 gap-4 text-sm text-blue-800">
-            <div className="space-y-2">
-              <div className="flex items-start gap-2">
+          <div className="grid md:grid-cols-2 gap-6 text-sm text-blue-800">
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
                   1
                 </span>
-                <span>Paste a YouTube URL in the input field</span>
+                <span>Paste any YouTube URL in the input field</span>
               </div>
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
                   2
                 </span>
                 <span>Click "Preview" to see video details (optional)</span>
               </div>
             </div>
-            <div className="space-y-2">
-              <div className="flex items-start gap-2">
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
                   3
                 </span>
                 <span>Choose "Audio" for music or "Video" for full video</span>
               </div>
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
                   4
                 </span>
-                <span>Use "Advanced Options" for quality control</span>
+                <span>Download starts automatically (direct or external)</span>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 p-4 bg-blue-100 rounded-xl">
-            <p className="text-xs text-blue-700">
-              <strong>Note:</strong> Audio downloads will be in WebM or M4A
-              format (high quality). Video downloads will be in MP4 format.
-              Download quality depends on the original video.
+          <div className="mt-6 grid md:grid-cols-2 gap-4">
+            <div className="p-4 bg-green-100 rounded-xl">
+              <h5 className="font-semibold text-green-800 mb-2">
+                🚀 Direct Download
+              </h5>
+              <p className="text-xs text-green-700">
+                When available, downloads happen directly from our servers for
+                the fastest experience.
+              </p>
+            </div>
+            <div className="p-4 bg-blue-100 rounded-xl">
+              <h5 className="font-semibold text-blue-800 mb-2">
+                🔗 External Download
+              </h5>
+              <p className="text-xs text-blue-700">
+                If direct download is unavailable, we redirect to trusted
+                external services to ensure you always get your download.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 p-4 bg-yellow-100 rounded-xl">
+            <p className="text-xs text-yellow-800">
+              <strong>Note:</strong> Download availability depends on YouTube's
+              current restrictions. We use multiple methods to ensure the
+              highest success rate possible.
             </p>
           </div>
         </div>
